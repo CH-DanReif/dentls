@@ -20,6 +20,13 @@
  * that has significantly negative effect on unlink performance
  */
 
+// Globals
+unsigned long delete_count = 0; // Running count of deletions
+unsigned short show_progress = 0; // By default, don't show progress
+unsigned short print_only = 1; // By default, print entries, don't unlink
+unsigned long progress_interval_minor = 1000; // Print a ".".
+unsigned long progress_interval_major = 50; // Print the number done so far.
+
 /* Tests indicate that performing a ascending order traversal
  * is about 1/3 faster than a descending order traversal */
 int compare_fnames(const void *key1, const void *key2) {
@@ -30,15 +37,23 @@ void walk_tree(const void *node, VISIT val, int lvl) {
   int rc = 0;
   switch(val) {
   case leaf:
-    printf("%s\n", *(char **)node);
-    // rc = unlink(*(char **)node);
+    if (print_only) {
+      printf("%s\n", *(char **)node);
+    } else {
+      rc = unlink(*(char **)node);
+    }
+    delete_count++;
     break;
   /* End order is deliberate here as it offers the best btree
    * rebalancing avoidance.
    */
   case endorder:
-    printf("%s\n", *(char **)node);
-    // rc = unlink(*(char **)node);
+    if (print_only) {
+      printf("%s\n", *(char **)node);
+    } else {
+      rc = unlink(*(char **)node);
+    }
+    delete_count++;
   break;
   default:
     return;
@@ -46,10 +61,22 @@ void walk_tree(const void *node, VISIT val, int lvl) {
   }
 
   if (rc < 0) {
+    fprintf(stderr, "Failed to delete %s", *(char **)node);
     perror("unlink problem");
     exit(1);
   }
 
+  if (show_progress) {
+    if (delete_count % (progress_interval_minor * progress_interval_major) == 0) {
+      sleep(1);
+      fprintf(stderr, "%s%lu", (delete_count ? "\n" : ""), delete_count);
+      fflush(stderr);
+    }
+    else if (delete_count % progress_interval_minor == 0) {
+      fprintf(stderr, ".");
+      fflush(stderr);
+    }
+  }
 }
 
 void dummy_destroy(void *nil) {
@@ -112,6 +139,28 @@ int main(const int argc, const char** argv) {
     if (argc < 2) {
         fprintf(stderr, "You must supply a valid directory path.\n");
         exit(1);
+    }
+
+    if (argv[1][0] == '-' || argv[1][0] != '/') {
+      fprintf(stderr, "Usage: %s <directory>\n", argv[0]);
+      fprintf(stderr, "  For safety, <directory> must be fully-qualified (i.e., start with /).\n");
+      fprintf(stderr, "  Env: Set DENTLS_DELETE=delete to delete instead of print.\n");
+      fprintf(stderr, "  Env: Set DENTLS_PROGRESS to show progress on stderr.\n");
+      return -1;
+    }
+
+    if (getenv("DENTLS_DELETE") != NULL) {
+      if (strcmp(getenv("DENTLS_DELETE"), "delete")) {
+        fprintf(stderr, "If you'd like to delete files, please set DENTLS_DELETE to 'delete', *EXACTLY*.\n");
+        fprintf(stderr, "If you did not intend to run deletes, please unset the variable entirely.\n");
+        return 1;
+      } else {
+        print_only = 0;
+      }
+    }
+
+    if (getenv("DENTLS_PROGRESS")) {
+      show_progress = 1;
     }
 
     const char *path = argv[1];
@@ -190,10 +239,10 @@ int main(const int argc, const char** argv) {
         linked_list_prepend_override(&dirent_buffers_list, buffer);
     }
     fprintf(stderr, "Total files: %d\n", totalfiles);
-    printf("Performing delete..\n");
+    fprintf(stderr, "Performing %s...\n", (print_only ? "print" : "delete"));
 
     twalk(tree, walk_tree);
-    printf("Done\n");
+    fprintf(stderr, "Done\n");
     close(dirfd);
     free_linked_list(dirent_buffers_list);
     tdestroy(tree, dummy_destroy);
